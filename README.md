@@ -2,6 +2,23 @@
 
 一个完全离线的 Windows 10/11 桌面任务小组件，使用 Tauri 2、Rust、React、TypeScript、Zustand 和 SQLite。
 
+## 下载与安装
+
+**当前版本：v0.1.0，适用于 Windows 10/11 x64。**
+
+- [直接下载安装包（EXE）](https://github.com/MYPoems/daily-task-widget/releases/download/v0.1.0/Daily.Task.Widget_0.1.0_x64-setup.exe)
+- [查看 GitHub Releases 页面](https://github.com/MYPoems/daily-task-widget/releases/tag/v0.1.0)
+
+下载后运行安装包，即可从开始菜单启动 Daily Task Widget。安装包尚未进行代码签名；如需核对文件，请在下载目录运行：
+
+```powershell
+(Get-FileHash -LiteralPath '.\Daily.Task.Widget_0.1.0_x64-setup.exe' -Algorithm SHA256).Hash
+```
+
+v0.1.0 安装包的 SHA-256：`0263D20AB2CD78DE2EF19CE8C31ECAF960C685717B234FECABF9FE276B066786`。
+
+应用本身可离线使用。安装时若系统缺少 Microsoft Edge WebView2 Runtime，安装程序需要联网下载该组件；Windows 10/11 通常已提供。提醒功能需要小组件保持运行，并允许 Windows 通知。
+
 ## 功能
 
 - 今日任务按优先级排序，待完成和已完成分别显示；顶部显示平均任务进度和完成数量。
@@ -15,7 +32,7 @@
 
 打开小组件后，点击底部“添加任务”，输入标题后按 Enter。点击任务标题可编辑日期、优先级、提醒、备注并添加子项。勾选子项会立即更新任务进度；没有子项的任务可直接勾选任务左侧方框。窗口顶部空白区域可拖动，右上角 × 将窗口收起到托盘。托盘菜单包含打开、快速添加、设置和退出。
 
-任务数据库位于 `%APPDATA%\com.dailywidget.app\tasks.sqlite3`。更新或重新安装时请保留此文件；首次启动会自动应用数据库迁移。界面偏好保存在本机 WebView2 存储中。提醒需要应用正在运行，且 Windows 通知没有被关闭。
+任务数据库位于 `%APPDATA%\com.dailywidget.app\tasks.sqlite3`。更新或重新安装时请保留此文件；首次启动会自动应用数据库迁移。界面偏好保存在本机 WebView2 存储中。
 
 ## 开发
 
