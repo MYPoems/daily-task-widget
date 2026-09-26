@@ -10,9 +10,11 @@ interface Props {
   onComplete: (task: Task) => Promise<void>;
   onSubtask: (id: string, completed: boolean) => Promise<void>;
   onError: (error: unknown) => void;
+  showDate?: boolean;
+  onMoveToToday?: (task: Task) => Promise<void>;
 }
 
-export const TaskItem = memo(function TaskItem({ task, t, onOpen, onProgress, onComplete, onSubtask, onError }: Props) {
+export const TaskItem = memo(function TaskItem({ task, t, onOpen, onProgress, onComplete, onSubtask, onError, showDate = false, onMoveToToday }: Props) {
   const [adjusting, setAdjusting] = useState(false);
   const [busy, setBusy] = useState(false);
   const done = task.status === "done";
@@ -46,6 +48,14 @@ export const TaskItem = memo(function TaskItem({ task, t, onOpen, onProgress, on
     finally { setBusy(false); }
   }
 
+  async function moveToToday() {
+    if (!onMoveToToday) return;
+    setBusy(true);
+    try { await onMoveToToday(task); }
+    catch (error) { onError(error); }
+    finally { setBusy(false); }
+  }
+
   return (
     <article className={`task-item ${done ? "is-done" : ""}`}>
       <div className="task-main">
@@ -59,6 +69,7 @@ export const TaskItem = memo(function TaskItem({ task, t, onOpen, onProgress, on
         </div>
         {!done && <strong className="task-percent">{task.progress}%</strong>}
       </div>
+      {showDate && <div className="task-date-meta"><time dateTime={task.date}>{task.date}</time>{onMoveToToday && <button type="button" disabled={busy} onClick={() => void moveToToday()}>{t.moveToToday}</button>}</div>}
       {!done && task.subtasks.length === 0 && (
         <>
           <button className="task-progress-button" type="button" aria-label={`${t.progressControl}: ${task.title}, ${task.progress}%`} aria-expanded={adjusting} onClick={() => setAdjusting(!adjusting)}>

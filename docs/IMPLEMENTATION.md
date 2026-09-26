@@ -8,6 +8,12 @@
 - Event-driven reminder worker in Rust, Windows notifications, and 10/30/60 minute snooze. Windows notifications require the app to be running and notifications enabled.
 - Task-core database tests and a frontend production build.
 
+## v0.1.1: tasks across dates
+
+- The task store loads all dates. The Today summary and completed area still count only today's tasks.
+- A compact Other dates entry opens overdue, upcoming and completed history sections. Overdue tasks can move to today in one click; all listed tasks remain editable.
+- Verified the Windows release window with tasks dated yesterday, today and tomorrow, including the move action, bilingual labels and return navigation. All QA records were removed afterward.
+
 ## Delivery checks
 
 - Build a Windows NSIS installer and inspect the resulting artifact.

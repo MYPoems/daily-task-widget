@@ -13,7 +13,8 @@ import type { Task, UpdateTaskInput } from "./types/task";
 import { todayKey, untilNextLocalDay } from "./utils/date";
 import "./App.css";
 
-type View = "today" | "detail" | "settings";
+type View = "today" | "schedule" | "detail" | "settings";
+type TaskListView = "today" | "schedule";
 
 function asUpdate(task: Task, changes: Partial<UpdateTaskInput>): UpdateTaskInput {
   return {
@@ -39,13 +40,14 @@ function byPriority(a: Task, b: Task): number {
 function App() {
   const [language, setLanguage] = useState<Language>(loadLanguage);
   const [view, setView] = useState<View>("today");
+  const [returnView, setReturnView] = useState<TaskListView>("today");
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [quickAdd, setQuickAdd] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [today, setToday] = useState(todayKey);
   const tasks = useTaskStore((state) => state.tasks);
   const loading = useTaskStore((state) => state.loading);
-  const loadToday = useTaskStore((state) => state.loadToday);
+  const loadTasks = useTaskStore((state) => state.loadTasks);
   const createTask = useTaskStore((state) => state.createTask);
   const updateTask = useTaskStore((state) => state.updateTask);
   const deleteTask = useTaskStore((state) => state.deleteTask);
@@ -63,18 +65,18 @@ function App() {
   }, []);
 
   useEffect(() => {
-    void loadToday().catch(showError);
+    void loadTasks().catch(showError);
     let timer: ReturnType<typeof setTimeout>;
     function nextDay() {
       timer = setTimeout(() => {
         setToday(todayKey());
-        void loadToday().catch(showError);
+        void loadTasks().catch(showError);
         nextDay();
       }, untilNextLocalDay() + 50);
     }
     nextDay();
     return () => clearTimeout(timer);
-  }, [loadToday, showError]);
+  }, [loadTasks, showError]);
 
   useEffect(() => {
     saveLanguage(language);
@@ -112,9 +114,14 @@ function App() {
     return () => clearTimeout(timer);
   }, [toast]);
 
-  const activeTasks = useMemo(() => tasks.filter((task) => task.status !== "done").sort(byPriority), [tasks]);
-  const completedTasks = useMemo(() => tasks.filter((task) => task.status === "done").sort(byPriority), [tasks]);
-  const progress = tasks.length ? Math.round(tasks.reduce((sum, task) => sum + task.progress, 0) / tasks.length) : 0;
+  const todayTasks = useMemo(() => tasks.filter((task) => task.date === today), [tasks, today]);
+  const activeTasks = useMemo(() => todayTasks.filter((task) => task.status !== "done").sort(byPriority), [todayTasks]);
+  const completedTasks = useMemo(() => todayTasks.filter((task) => task.status === "done").sort(byPriority), [todayTasks]);
+  const overdueTasks = useMemo(() => tasks.filter((task) => task.date < today && task.status !== "done").sort(byPriority), [tasks, today]);
+  const upcomingTasks = useMemo(() => tasks.filter((task) => task.date > today && task.status !== "done").sort(byPriority), [tasks, today]);
+  const otherCompletedTasks = useMemo(() => tasks.filter((task) => task.date !== today && task.status === "done").sort(byPriority), [tasks, today]);
+  const otherCount = overdueTasks.length + upcomingTasks.length + otherCompletedTasks.length;
+  const progress = todayTasks.length ? Math.round(todayTasks.reduce((sum, task) => sum + task.progress, 0) / todayTasks.length) : 0;
   const dateLabel = new Intl.DateTimeFormat(language === "zh" ? "zh-CN" : "en-US", {
     weekday: "long", month: "long", day: "numeric",
   }).format(new Date(`${today}T12:00:00`));
@@ -134,16 +141,26 @@ function App() {
       : { status: "done", progress: 100 }));
   }
 
+  function openTask(task: Task, from: TaskListView) {
+    setSelectedTask(task);
+    setReturnView(from);
+    setView("detail");
+  }
+
+  async function moveToToday(task: Task) {
+    await updateTask(asUpdate(task, { date: todayKey() }));
+  }
+
   async function saveDetail(input: UpdateTaskInput) {
     await updateTask(input);
     setSelectedTask(null);
-    setView("today");
+    setView(returnView);
   }
 
   async function removeTask(id: string) {
     await deleteTask(id);
     setSelectedTask(null);
-    setView("today");
+    setView(returnView);
   }
 
   async function changeAlwaysOnTop(enabled: boolean) {
@@ -177,23 +194,34 @@ function App() {
     </div>
 
     {view === "settings" ? <Settings t={t} language={language} onLanguage={setLanguage} onBack={() => setView("today")} onAlwaysOnTop={changeAlwaysOnTop} onError={showError} />
-      : view === "detail" && selectedTask ? <TaskDetail key={selectedTask.id} task={selectedTask} language={language} t={t} onBack={() => setView("today")} onSave={saveDetail} onDelete={removeTask} onAddSubtask={addChild} onToggleSubtask={toggleChild} onDeleteSubtask={removeChild} onError={showError} />
+      : view === "detail" && selectedTask ? <TaskDetail key={selectedTask.id} task={selectedTask} language={language} t={t} onBack={() => setView(returnView)} onSave={saveDetail} onDelete={removeTask} onAddSubtask={addChild} onToggleSubtask={toggleChild} onDeleteSubtask={removeChild} onError={showError} />
+      : view === "schedule" ? <div className="page schedule-page">
+        <div className="page-heading"><button className="text-button" type="button" onClick={() => setView("today")}>← {t.back}</button><h2>{t.otherDates}</h2></div>
+        {loading && tasks.length === 0 ? <p className="loading">{t.loading}</p>
+          : otherCount === 0 ? <section className="empty-state"><div className="empty-icon" aria-hidden="true">✓</div><h2>{t.noOtherDates}</h2></section>
+          : <>
+            {overdueTasks.length > 0 && <section className="task-section schedule-section"><h2>{t.overdueTasks} · {overdueTasks.length}</h2>{overdueTasks.map((task) => <TaskItem key={task.id} task={task} t={t} onOpen={(item) => openTask(item, "schedule")} onProgress={changeProgress} onComplete={toggleComplete} onSubtask={toggleChild} onError={showError} showDate onMoveToToday={moveToToday} />)}</section>}
+            {upcomingTasks.length > 0 && <section className="task-section schedule-section"><h2>{t.upcomingTasks} · {upcomingTasks.length}</h2>{upcomingTasks.map((task) => <TaskItem key={task.id} task={task} t={t} onOpen={(item) => openTask(item, "schedule")} onProgress={changeProgress} onComplete={toggleComplete} onSubtask={toggleChild} onError={showError} showDate />)}</section>}
+            {otherCompletedTasks.length > 0 && <section className="task-section schedule-section completed-section"><h2>{t.otherCompletedTasks} · {otherCompletedTasks.length}</h2>{otherCompletedTasks.map((task) => <TaskItem key={task.id} task={task} t={t} onOpen={(item) => openTask(item, "schedule")} onProgress={changeProgress} onComplete={toggleComplete} onSubtask={toggleChild} onError={showError} showDate />)}</section>}
+          </>}
+      </div>
       : <div className="today-page">
         <header className="widget-header">
           <div><h1>{t.today}</h1><p className="date">{dateLabel}</p></div>
-          <span className="task-count">{t.taskCount(tasks.length)}</span>
+          <span className="task-count">{t.taskCount(todayTasks.length)}</span>
         </header>
         <section className="progress-summary" aria-label={t.progress}>
           <div className="summary-line"><span>{t.progress}</span><strong>{progress}%</strong></div>
           <div className="progress-track" role="progressbar" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}><div className="progress-fill" style={{ width: `${progress}%` }} /></div>
-          <p>{t.completed(completedTasks.length, tasks.length)}</p>
+          <p>{t.completed(completedTasks.length, todayTasks.length)}</p>
         </section>
+        {otherCount > 0 && <button className="other-dates-link" type="button" onClick={() => { setQuickAdd(false); setView("schedule"); }}><span>{t.otherDates}<span aria-hidden="true">›</span></span><small>{t.otherDatesCounts(overdueTasks.length, upcomingTasks.length, otherCompletedTasks.length)}</small></button>}
         <div className="task-list">
           {loading && tasks.length === 0 ? <p className="loading">{t.loading}</p>
-            : tasks.length === 0 ? <section className="empty-state"><div className="empty-icon" aria-hidden="true">✓</div><h2>{t.emptyTitle}</h2><p>{t.emptyHint}</p></section>
+            : todayTasks.length === 0 ? <section className="empty-state"><div className="empty-icon" aria-hidden="true">✓</div><h2>{t.emptyTitle}</h2><p>{t.emptyHint}</p></section>
             : <>
-              {activeTasks.length > 0 && <section className="task-section"><h2>{t.activeTasks}</h2>{activeTasks.map((task) => <TaskItem key={task.id} task={task} t={t} onOpen={(item) => { setSelectedTask(item); setView("detail"); }} onProgress={changeProgress} onComplete={toggleComplete} onSubtask={toggleChild} onError={showError} />)}</section>}
-              {completedTasks.length > 0 && <section className="task-section completed-section"><h2>{t.completedTasks}</h2>{completedTasks.map((task) => <TaskItem key={task.id} task={task} t={t} onOpen={(item) => { setSelectedTask(item); setView("detail"); }} onProgress={changeProgress} onComplete={toggleComplete} onSubtask={toggleChild} onError={showError} />)}</section>}
+              {activeTasks.length > 0 && <section className="task-section"><h2>{t.activeTasks}</h2>{activeTasks.map((task) => <TaskItem key={task.id} task={task} t={t} onOpen={(item) => openTask(item, "today")} onProgress={changeProgress} onComplete={toggleComplete} onSubtask={toggleChild} onError={showError} />)}</section>}
+              {completedTasks.length > 0 && <section className="task-section completed-section"><h2>{t.completedTasks}</h2>{completedTasks.map((task) => <TaskItem key={task.id} task={task} t={t} onOpen={(item) => openTask(item, "today")} onProgress={changeProgress} onComplete={toggleComplete} onSubtask={toggleChild} onError={showError} />)}</section>}
             </>}
         </div>
         <footer className="widget-footer">{quickAdd ? <QuickAdd t={t} onAdd={addTask} onCancel={() => setQuickAdd(false)} onError={showError} /> : <button className="add-task-button" type="button" onClick={() => setQuickAdd(true)}><span>＋</span>{t.addTask}</button>}</footer>

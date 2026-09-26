@@ -73,6 +73,11 @@ h1 { margin: 0 0 3px; font-size: 29px; font-weight: 650; letter-spacing: -.04em;
 .progress-track { height: 6px; margin-top: 13px; }
 .progress-fill, .task-progress-track > span { display: block; height: 100%; border-radius: inherit; background: var(--accent-strong); transition: width 180ms ease; }
 .progress-summary p { margin: 10px 0 0; color: var(--quiet); font-size: 11px; }
+.other-dates-link { width: 100%; margin-top: 10px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgb(var(--surface) / .72); color: var(--text); text-align: left; }
+.other-dates-link:hover { border-color: var(--accent); }
+.other-dates-link > span { display: flex; align-items: center; justify-content: space-between; font-size: 11px; font-weight: 600; }
+.other-dates-link > span > span { color: var(--accent); font-size: 17px; line-height: 12px; }
+.other-dates-link small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
 .task-list { min-height: 0; flex: 1; overflow-y: auto; padding: 12px 2px 8px; }
 .task-list, .page { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .task-list::-webkit-scrollbar, .page::-webkit-scrollbar { width: 7px; }
@@ -81,6 +86,7 @@ h1 { margin: 0 0 3px; font-size: 29px; font-weight: 650; letter-spacing: -.04em;
 .task-list::-webkit-scrollbar-thumb:hover, .page::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: padding-box; }
 .task-section h2 { margin: 7px 7px 9px; color: var(--quiet); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .completed-section { margin-top: 14px; }
+.schedule-section { margin-bottom: 14px; }
 .task-item { padding: 12px 12px 10px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 12px; background: rgb(var(--surface) / .8); }
 .task-item.is-done { opacity: .65; }
 .task-main { display: flex; align-items: flex-start; gap: 10px; }
@@ -103,6 +109,9 @@ h1 { margin: 0 0 3px; font-size: 29px; font-weight: 650; letter-spacing: -.04em;
 .subtask-inline span { overflow-wrap: anywhere; }
 .subtask-inline.is-complete span { text-decoration: line-through; opacity: .7; }
 .task-percent { padding-top: 2px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.task-date-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 5px 0 0 28px; color: var(--quiet); font-size: 10px; }
+.task-date-meta button { padding: 2px 0; border: 0; background: none; color: var(--accent); font-size: 10px; }
+.task-date-meta button:hover { text-decoration: underline; }
 .task-progress-button { display: block; width: calc(100% - 28px); margin: 9px 0 0 28px; padding: 5px 0; border: 0; background: none; }
 .task-progress-static { width: calc(100% - 28px); margin: 9px 0 0 28px; padding: 5px 0; }
 .task-progress-track { height: 5px; }

@@ -425,6 +425,38 @@ mod tests {
     }
 
     #[test]
+    fn all_dates_remain_accessible_and_can_move_to_today() -> Result<()> {
+        let path = test_path();
+        initialize(&path)?;
+        let mut overdue_input = create_input("Past task", Priority::High);
+        overdue_input.date = "2026-09-23".into();
+        let overdue = create_task(&path, overdue_input)?;
+        let today = create_task(&path, create_input("Today's task", Priority::Medium))?;
+        let mut upcoming_input = create_input("Future task", Priority::Low);
+        upcoming_input.date = "2026-09-25".into();
+        let upcoming = create_task(&path, upcoming_input)?;
+
+        assert_eq!(list_tasks(&path, None)?.len(), 3);
+        assert_eq!(list_tasks(&path, Some("2026-09-24"))?, vec![today.clone()]);
+        assert_eq!(get_task(&path, &overdue.id)?.as_ref(), Some(&overdue));
+        assert_eq!(get_task(&path, &upcoming.id)?.as_ref(), Some(&upcoming));
+
+        let moved = update_task(&path, UpdateTaskInput {
+            id: overdue.id.clone(), title: overdue.title, description: overdue.description,
+            date: "2026-09-24".into(), status: overdue.status,
+            progress: overdue.progress, priority: overdue.priority,
+            reminder: overdue.reminder, notes: overdue.notes,
+        })?;
+        assert_eq!(moved.date, "2026-09-24");
+        let today_tasks = list_tasks(&path, Some("2026-09-24"))?;
+        assert_eq!(today_tasks.len(), 2);
+        assert!(today_tasks.iter().any(|task| task.id == moved.id));
+        assert_eq!(list_tasks(&path, None)?.len(), 3);
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
     fn reminder_claim_and_reschedule_after_migration() -> Result<()> {
         let path = test_path();
         open(&path)?.execute_batch(include_str!("../../migrations/001_tasks.sql"))?;
