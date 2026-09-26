@@ -2,6 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import type { CreateTaskInput, Task, UpdateTaskInput } from "../types/task";
 
 export const taskService = {
+  exportBackup(path: string): Promise<number> {
+    return invoke("export_backup", { path });
+  },
+  importBackup(path: string): Promise<{ imported: number; skipped: number }> {
+    return invoke("import_backup", { path });
+  },
   create(input: CreateTaskInput): Promise<Task> {
     return invoke("create_task", { input });
   },

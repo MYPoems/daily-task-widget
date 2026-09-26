@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use tauri::State;
 
 use task_core::{
+    backup::{self, ImportSummary},
     db,
     task::{CreateTaskInput, Task, UpdateTaskInput},
 };
@@ -80,4 +81,16 @@ pub fn delete_subtask(state: State<'_, DatabaseState>, reminders: State<'_, Remi
     let task = db::delete_subtask(&state.path, &id).map_err(|error| error.to_string())?;
     let _ = reminders.0.send(());
     Ok(task)
+}
+
+#[tauri::command]
+pub fn export_backup(state: State<'_, DatabaseState>, path: String) -> Result<usize, String> {
+    backup::export(&state.path, std::path::Path::new(&path)).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn import_backup(state: State<'_, DatabaseState>, reminders: State<'_, ReminderSender>, path: String) -> Result<ImportSummary, String> {
+    let summary = backup::import(&state.path, std::path::Path::new(&path)).map_err(|error| error.to_string())?;
+    let _ = reminders.0.send(());
+    Ok(summary)
 }

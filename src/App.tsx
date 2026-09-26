@@ -193,7 +193,7 @@ function App() {
       </div>
     </div>
 
-    {view === "settings" ? <Settings t={t} language={language} onLanguage={setLanguage} onBack={() => setView("today")} onAlwaysOnTop={changeAlwaysOnTop} onError={showError} />
+    {view === "settings" ? <Settings t={t} language={language} onLanguage={setLanguage} onBack={() => setView("today")} onAlwaysOnTop={changeAlwaysOnTop} onError={showError} onImported={loadTasks} onNotice={setToast} />
       : view === "detail" && selectedTask ? <TaskDetail key={selectedTask.id} task={selectedTask} language={language} t={t} onBack={() => setView(returnView)} onSave={saveDetail} onDelete={removeTask} onAddSubtask={addChild} onToggleSubtask={toggleChild} onDeleteSubtask={removeChild} onError={showError} />
       : view === "schedule" ? <div className="page schedule-page">
         <div className="page-heading"><button className="text-button" type="button" onClick={() => setView("today")}>← {t.back}</button><h2>{t.otherDates}</h2></div>

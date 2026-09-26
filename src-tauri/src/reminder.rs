@@ -44,7 +44,8 @@ pub fn start(app: AppHandle, path: PathBuf) -> ReminderSender {
         }
         let wait = reminders.first()
             .and_then(|item| (item.due_at - Local::now()).to_std().ok())
-            .unwrap_or(Duration::from_secs(24 * 60 * 60));
+            .unwrap_or(Duration::from_secs(60))
+            .min(Duration::from_secs(60));
         let _ = receiver.recv_timeout(wait);
     });
     ReminderSender(sender)

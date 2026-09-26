@@ -11,6 +11,7 @@ use tauri_plugin_window_state::StateFlags;
 
 fn reveal(app: &tauri::AppHandle, event: Option<&str>) {
     if let Some(window) = app.get_webview_window("main") {
+        ensure_window_visible(&window);
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -18,10 +19,29 @@ fn reveal(app: &tauri::AppHandle, event: Option<&str>) {
     }
 }
 
+fn ensure_window_visible(window: &tauri::WebviewWindow) {
+    let (Ok(position), Ok(size), Ok(monitors)) =
+        (window.outer_position(), window.outer_size(), window.available_monitors()) else { return; };
+    let visible = monitors.iter().any(|monitor| {
+        let screen = monitor.position();
+        let bounds = monitor.size();
+        let overlap_x = (i64::from(position.x) + i64::from(size.width))
+            .min(i64::from(screen.x) + i64::from(bounds.width))
+            - i64::from(position.x).max(i64::from(screen.x));
+        let overlap_y = (i64::from(position.y) + i64::from(size.height))
+            .min(i64::from(screen.y) + i64::from(bounds.height))
+            - i64::from(position.y).max(i64::from(screen.y));
+        overlap_x >= 64 && overlap_y >= 64
+    });
+    if !visible { let _ = window.center(); }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| reveal(app, None)))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_window_state::Builder::default()
             .with_state_flags(StateFlags::POSITION | StateFlags::SIZE)
@@ -32,6 +52,7 @@ pub fn run() {
             })
             .build())
         .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") { ensure_window_visible(&window); }
             let path = app.path().app_data_dir()?.join("tasks.sqlite3");
             db::initialize(&path).map_err(|error| {
                 std::io::Error::other(format!("Database setup failed: {error}"))
@@ -72,6 +93,11 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if let WindowEvent::Focused(true) = event {
+                if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
+                    ensure_window_visible(&webview);
+                }
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
@@ -87,6 +113,8 @@ pub fn run() {
             commands::task::add_subtask,
             commands::task::set_subtask_completed,
             commands::task::delete_subtask,
+            commands::task::export_backup,
+            commands::task::import_backup,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Daily Task Widget");
