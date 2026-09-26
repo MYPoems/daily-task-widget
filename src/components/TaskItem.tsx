@@ -65,6 +65,7 @@ export const TaskItem = memo(function TaskItem({ task, t, onOpen, onProgress, on
         <div className="task-body">
           <button className="task-title" type="button" onClick={() => onOpen(task)}>{task.title}</button>
           <span className={`priority priority-${task.priority}`}><span className="priority-dot" />{t[task.priority]}</span>
+          {task.recurrence !== "none" && <span className="repeat-badge" aria-label={`${t.repeat}: ${task.recurrence === "daily" ? t.repeatDaily : t.repeatWeekly}`}>↻ {task.recurrence === "daily" ? t.repeatDaily : t.repeatWeekly}</span>}
           {task.subtasks.length > 0 && <span className="subtask-count">{t.subtaskCount(task.subtasks.filter((item) => item.completed).length, task.subtasks.length)}</span>}
         </div>
         {!done && <strong className="task-percent">{task.progress}%</strong>}

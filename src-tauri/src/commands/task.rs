@@ -56,6 +56,18 @@ pub fn delete_task(state: State<'_, DatabaseState>, reminders: State<'_, Reminde
 }
 
 #[tauri::command]
+pub fn restore_task(state: State<'_, DatabaseState>, reminders: State<'_, ReminderSender>, id: String) -> Result<bool, String> {
+    let restored = db::restore_task(&state.path, &id).map_err(|error| error.to_string())?;
+    let _ = reminders.0.send(());
+    Ok(restored)
+}
+
+#[tauri::command]
+pub fn list_deleted_tasks(state: State<'_, DatabaseState>) -> Result<Vec<Task>, String> {
+    db::list_deleted_tasks(&state.path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn snooze_task(state: State<'_, DatabaseState>, reminders: State<'_, ReminderSender>, id: String, minutes: i64) -> Result<(), String> {
     db::snooze_task(&state.path, &id, minutes).map_err(|error| error.to_string())?;
     let _ = reminders.0.send(());

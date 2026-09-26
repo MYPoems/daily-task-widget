@@ -9,6 +9,7 @@ interface TaskState {
   createTask: (input: CreateTaskInput) => Promise<Task>;
   updateTask: (input: UpdateTaskInput) => Promise<Task>;
   deleteTask: (id: string) => Promise<void>;
+  restoreTask: (id: string) => Promise<void>;
   addSubtask: (taskId: string, title: string) => Promise<Task>;
   setSubtaskCompleted: (id: string, completed: boolean) => Promise<Task>;
   deleteSubtask: (id: string) => Promise<Task>;
@@ -37,6 +38,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
   async deleteTask(id) {
     await taskService.delete(id);
+    await get().loadTasks();
+  },
+  async restoreTask(id) {
+    await taskService.restore(id);
     await get().loadTasks();
   },
   async addSubtask(taskId, title) {

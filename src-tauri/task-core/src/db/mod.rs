@@ -1,16 +1,16 @@
 use std::{collections::HashMap, path::Path};
 
 use anyhow::{bail, Context, Result};
-use chrono::{DateTime, Local, NaiveDateTime, SecondsFormat, TimeZone, Utc};
+use chrono::{DateTime, Days, Local, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use uuid::Uuid;
 
 use crate::task::{
     normalize_reminder, normalize_status, validate_date, validate_title, CreateTaskInput, Priority,
-    Reminder, Status, Subtask, Task, UpdateTaskInput,
+    Recurrence, Reminder, Status, Subtask, Task, UpdateTaskInput,
 };
 
-const TASK_COLUMNS: &str = "id, title, description, task_date, status, progress, priority, reminder_enabled, reminder_time, notes, created_at, updated_at";
+const TASK_COLUMNS: &str = "id, title, description, task_date, status, progress, priority, reminder_enabled, reminder_time, notes, created_at, updated_at, recurrence";
 
 pub fn initialize(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
@@ -25,13 +25,26 @@ pub fn initialize(path: &Path) -> Result<()> {
             conn.execute_batch(include_str!("../../migrations/001_tasks.sql"))?;
             conn.execute_batch(include_str!("../../migrations/002_reminders.sql"))?;
             conn.execute_batch(include_str!("../../migrations/003_subtasks.sql"))?;
+            conn.execute_batch(include_str!("../../migrations/004_soft_delete.sql"))?;
+            conn.execute_batch(include_str!("../../migrations/005_recurrence.sql"))?;
         }
         1 => {
             conn.execute_batch(include_str!("../../migrations/002_reminders.sql"))?;
             conn.execute_batch(include_str!("../../migrations/003_subtasks.sql"))?;
+            conn.execute_batch(include_str!("../../migrations/004_soft_delete.sql"))?;
+            conn.execute_batch(include_str!("../../migrations/005_recurrence.sql"))?;
         }
-        2 => conn.execute_batch(include_str!("../../migrations/003_subtasks.sql"))?,
-        3 => {}
+        2 => {
+            conn.execute_batch(include_str!("../../migrations/003_subtasks.sql"))?;
+            conn.execute_batch(include_str!("../../migrations/004_soft_delete.sql"))?;
+            conn.execute_batch(include_str!("../../migrations/005_recurrence.sql"))?;
+        }
+        3 => {
+            conn.execute_batch(include_str!("../../migrations/004_soft_delete.sql"))?;
+            conn.execute_batch(include_str!("../../migrations/005_recurrence.sql"))?;
+        }
+        4 => conn.execute_batch(include_str!("../../migrations/005_recurrence.sql"))?,
+        5 => {},
         _ => bail!("Database schema version {version} is newer than this app supports"),
     }
     Ok(())
@@ -62,6 +75,7 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<Task> {
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
         subtasks: Vec::new(),
+        recurrence: Recurrence::from_db(&row.get::<_, String>(12)?).ok_or(rusqlite::Error::InvalidQuery)?,
     })
 }
 
@@ -90,9 +104,9 @@ pub fn create_task(path: &Path, input: CreateTaskInput) -> Result<Task> {
     let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     let conn = open(path)?;
     conn.execute(
-        "INSERT INTO tasks (id, title, description, task_date, status, progress, priority, reminder_enabled, reminder_time, notes, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, 'todo', 0, ?5, ?6, ?7, ?8, ?9, ?9)",
-        params![id, title, input.description, input.date, input.priority.as_db(), reminder.enabled, reminder.time, input.notes, now],
+        "INSERT INTO tasks (id, title, description, task_date, status, progress, priority, reminder_enabled, reminder_time, notes, created_at, updated_at, recurrence)
+         VALUES (?1, ?2, ?3, ?4, 'todo', 0, ?5, ?6, ?7, ?8, ?9, ?9, ?10)",
+        params![id, title, input.description, input.date, input.priority.as_db(), reminder.enabled, reminder.time, input.notes, now, input.recurrence.as_db()],
     )
     .context("Failed to create task")?;
     get_task(path, &id)?.context("Created task could not be read back")
@@ -102,10 +116,10 @@ pub fn list_tasks(path: &Path, date: Option<&str>) -> Result<Vec<Task>> {
     let conn = open(path)?;
     let sql = if date.is_some() {
         format!(
-            "SELECT {TASK_COLUMNS} FROM tasks WHERE task_date = ?1 ORDER BY priority DESC, task_date ASC, created_at ASC"
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE task_date = ?1 AND deleted_at IS NULL ORDER BY priority DESC, task_date ASC, created_at ASC"
         )
     } else {
-        format!("SELECT {TASK_COLUMNS} FROM tasks ORDER BY priority DESC, task_date ASC, created_at ASC")
+        format!("SELECT {TASK_COLUMNS} FROM tasks WHERE deleted_at IS NULL ORDER BY priority DESC, task_date ASC, created_at ASC")
     };
     let mut statement = conn.prepare(&sql).context("Failed to prepare task list")?;
     let tasks = if let Some(date) = date {
@@ -121,10 +135,21 @@ pub fn list_tasks(path: &Path, date: Option<&str>) -> Result<Vec<Task>> {
     Ok(tasks)
 }
 
+pub fn list_deleted_tasks(path: &Path) -> Result<Vec<Task>> {
+    let conn = open(path)?;
+    let mut statement = conn.prepare(&format!(
+        "SELECT {TASK_COLUMNS} FROM tasks WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC"
+    ))?;
+    let mut tasks = statement.query_map([], task_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    attach_subtasks(&conn, &mut tasks)?;
+    Ok(tasks)
+}
+
 pub fn get_task(path: &Path, id: &str) -> Result<Option<Task>> {
     let conn = open(path)?;
     let mut task = conn.query_row(
-        &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1"),
+        &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1 AND deleted_at IS NULL"),
         [id],
         task_from_row,
     )
@@ -153,11 +178,12 @@ pub fn update_task(path: &Path, input: UpdateTaskInput) -> Result<Task> {
         subtask_completion(existing.subtasks.iter().map(|item| item.completed))
     };
     let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-    let conn = open(path)?;
-    conn.execute(
+    let mut conn = open(path)?;
+    let tx = conn.transaction()?;
+    tx.execute(
         "UPDATE tasks SET title = ?1, description = ?2, task_date = ?3, status = ?4,
          progress = ?5, priority = ?6, reminder_enabled = ?7, reminder_time = ?8,
-         notes = ?9, updated_at = ?10,
+         notes = ?9, updated_at = ?10, recurrence = ?12,
          reminder_fired_at = CASE WHEN task_date != ?3 OR reminder_time IS NOT ?8 OR reminder_enabled != ?7 OR status = 'done' THEN NULL ELSE reminder_fired_at END,
          snooze_until = CASE WHEN task_date != ?3 OR reminder_time IS NOT ?8 OR reminder_enabled != ?7 OR status = 'done' THEN NULL ELSE snooze_until END
          WHERE id = ?11",
@@ -172,11 +198,53 @@ pub fn update_task(path: &Path, input: UpdateTaskInput) -> Result<Task> {
             reminder.time,
             input.notes,
             now,
-            input.id
+            input.id,
+            input.recurrence.as_db(),
         ],
     )
     .context("Failed to update task")?;
+    if status == Status::Done && existing.status != Status::Done {
+        ensure_next_occurrence(&tx, &input.id)?;
+    }
+    tx.commit()?;
     get_task(path, &input.id)?.context("Updated task could not be read back")
+}
+
+fn next_occurrence_date(date: &str, recurrence: Recurrence, today: NaiveDate) -> Result<String> {
+    let mut next = NaiveDate::parse_from_str(date, "%Y-%m-%d")?;
+    let days = match recurrence { Recurrence::Daily => 1, Recurrence::Weekly => 7, Recurrence::None => bail!("Task does not repeat") };
+    loop {
+        next = next.checked_add_days(Days::new(days)).context("Repeat date overflow")?;
+        if next > today { return Ok(next.format("%Y-%m-%d").to_string()); }
+    }
+}
+
+fn ensure_next_occurrence(conn: &Connection, task_id: &str) -> Result<()> {
+    let source: Option<(String, String)> = conn.query_row(
+        "SELECT task_date, recurrence FROM tasks WHERE id = ?1 AND status = 'done' AND deleted_at IS NULL",
+        [task_id], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional()?;
+    let Some((date, recurrence)) = source else { return Ok(()); };
+    let recurrence = Recurrence::from_db(&recurrence).context("Invalid repeat rule")?;
+    if recurrence == Recurrence::None { return Ok(()); }
+    let next_date = next_occurrence_date(&date, recurrence, Local::now().date_naive())?;
+    let next_id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+    let inserted = conn.execute(
+        "INSERT OR IGNORE INTO tasks (id, title, description, task_date, status, progress, priority,
+          reminder_enabled, reminder_time, notes, created_at, updated_at, recurrence, parent_occurrence_id)
+         SELECT ?1, title, description, ?2, 'todo', 0, priority, reminder_enabled, reminder_time,
+          notes, ?3, ?3, recurrence, id FROM tasks WHERE id = ?4 AND deleted_at IS NULL",
+        params![next_id, next_date, now, task_id],
+    )?;
+    if inserted == 1 {
+        conn.execute(
+            "INSERT INTO subtasks (id, task_id, title, completed, created_at)
+             SELECT lower(hex(randomblob(16))), ?1, title, 0, ?2 FROM subtasks WHERE task_id = ?3 ORDER BY created_at, id",
+            params![next_id, now, task_id],
+        )?;
+    }
+    Ok(())
 }
 
 fn subtask_completion(items: impl Iterator<Item = bool>) -> (Status, i32) {
@@ -227,6 +295,7 @@ pub fn set_subtask_completed(path: &Path, id: &str, completed: bool) -> Result<T
         .optional()?.context("Subtask not found")?;
     tx.execute("UPDATE subtasks SET completed = ?1 WHERE id = ?2", params![completed, id])?;
     recalculate_subtasks(&tx, &task_id)?;
+    ensure_next_occurrence(&tx, &task_id)?;
     tx.commit()?;
     get_task(path, &task_id)?.context("Parent task not found")
 }
@@ -238,6 +307,7 @@ pub fn delete_subtask(path: &Path, id: &str) -> Result<Task> {
         .optional()?.context("Subtask not found")?;
     tx.execute("DELETE FROM subtasks WHERE id = ?1", [id])?;
     recalculate_subtasks(&tx, &task_id)?;
+    ensure_next_occurrence(&tx, &task_id)?;
     tx.commit()?;
     get_task(path, &task_id)?.context("Parent task not found")
 }
@@ -254,7 +324,7 @@ pub fn pending_reminders(path: &Path, now: DateTime<Local>) -> Result<Vec<Schedu
     let conn = open(path)?;
     let mut statement = conn.prepare(
         "SELECT id, title, progress, task_date, reminder_time, snooze_until
-         FROM tasks WHERE reminder_enabled = 1 AND status != 'done'
+         FROM tasks WHERE reminder_enabled = 1 AND status != 'done' AND deleted_at IS NULL
          AND reminder_fired_at IS NULL AND (task_date >= ?1 OR snooze_until IS NOT NULL)",
     )?;
     let today = now.date_naive().format("%Y-%m-%d").to_string();
@@ -283,7 +353,7 @@ pub fn claim_reminder(path: &Path, id: &str) -> Result<bool> {
     let conn = open(path)?;
     let changed = conn.execute(
         "UPDATE tasks SET reminder_fired_at = ?1, snooze_until = NULL
-         WHERE id = ?2 AND reminder_enabled = 1 AND status != 'done' AND reminder_fired_at IS NULL",
+         WHERE id = ?2 AND reminder_enabled = 1 AND status != 'done' AND deleted_at IS NULL AND reminder_fired_at IS NULL",
         params![Utc::now().to_rfc3339(), id],
     )?;
     Ok(changed > 0)
@@ -292,7 +362,7 @@ pub fn claim_reminder(path: &Path, id: &str) -> Result<bool> {
 pub fn release_reminder(path: &Path, id: &str) -> Result<()> {
     let conn = open(path)?;
     conn.execute(
-        "UPDATE tasks SET reminder_fired_at = NULL WHERE id = ?1 AND reminder_enabled = 1 AND status != 'done'",
+        "UPDATE tasks SET reminder_fired_at = NULL WHERE id = ?1 AND reminder_enabled = 1 AND status != 'done' AND deleted_at IS NULL",
         [id],
     )?;
     Ok(())
@@ -304,7 +374,7 @@ pub fn snooze_task(path: &Path, id: &str, minutes: i64) -> Result<()> {
     let conn = open(path)?;
     let changed = conn.execute(
         "UPDATE tasks SET snooze_until = ?1, reminder_fired_at = NULL
-         WHERE id = ?2 AND reminder_enabled = 1 AND status != 'done'",
+         WHERE id = ?2 AND reminder_enabled = 1 AND status != 'done' AND deleted_at IS NULL",
         params![until, id],
     )?;
     if changed == 0 { bail!("Task is not eligible for snooze"); }
@@ -314,8 +384,14 @@ pub fn snooze_task(path: &Path, id: &str, minutes: i64) -> Result<()> {
 pub fn delete_task(path: &Path, id: &str) -> Result<bool> {
     let conn = open(path)?;
     let changed = conn
-        .execute("DELETE FROM tasks WHERE id = ?1", [id])
+        .execute("UPDATE tasks SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL", params![Utc::now().to_rfc3339(), id])
         .context("Failed to delete task")?;
+    Ok(changed > 0)
+}
+
+pub fn restore_task(path: &Path, id: &str) -> Result<bool> {
+    let conn = open(path)?;
+    let changed = conn.execute("UPDATE tasks SET deleted_at = NULL WHERE id = ?1 AND deleted_at IS NOT NULL", [id])?;
     Ok(changed > 0)
 }
 
@@ -335,6 +411,7 @@ mod tests {
             priority,
             reminder: None,
             notes: None,
+            recurrence: Recurrence::None,
         }
     }
 
@@ -362,6 +439,7 @@ mod tests {
                     time: Some("15:00".into()),
                 },
                 notes: Some("Confirm totals".into()),
+                recurrence: Recurrence::None,
             },
         )?;
         assert_eq!(updated.title, "Finish quote");
@@ -401,6 +479,7 @@ mod tests {
                 priority: Priority::Low,
                 reminder: Reminder::default(),
                 notes: None,
+                recurrence: Recurrence::None,
             },
         )?;
         assert_eq!((completed.status, completed.progress), (Status::Done, 100));
@@ -416,10 +495,80 @@ mod tests {
                 priority: Priority::Low,
                 reminder: Reminder::default(),
                 notes: None,
+                recurrence: Recurrence::None,
             },
         )?;
         assert_eq!((undone.status, undone.progress), (Status::Doing, 95));
         assert!(list_tasks(&path, Some("2026-02-30")).is_err());
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn deleted_tasks_can_be_restored_without_losing_subtasks() -> Result<()> {
+        let path = test_path();
+        initialize(&path)?;
+        let task = create_task(&path, create_input("Undo me", Priority::High))?;
+        let with_child = add_subtask(&path, &task.id, "Keep child")?;
+        assert!(delete_task(&path, &task.id)?);
+        assert!(list_tasks(&path, None)?.is_empty());
+        assert!(get_task(&path, &task.id)?.is_none());
+        assert_eq!(list_deleted_tasks(&path)?, vec![with_child.clone()]);
+        assert!(restore_task(&path, &task.id)?);
+        assert_eq!(get_task(&path, &task.id)?, Some(with_child));
+        assert!(list_deleted_tasks(&path)?.is_empty());
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn repeating_task_creates_one_future_copy_with_reset_subtasks() -> Result<()> {
+        let path = test_path();
+        initialize(&path)?;
+        let mut input = create_input("Daily check", Priority::High);
+        input.recurrence = Recurrence::Daily;
+        let task = create_task(&path, input)?;
+        let task = add_subtask(&path, &task.id, "Step")?;
+        let done = set_subtask_completed(&path, &task.subtasks[0].id, true)?;
+        assert_eq!(done.status, Status::Done);
+        let tasks = list_tasks(&path, None)?;
+        assert_eq!(tasks.len(), 2);
+        let future = tasks.iter().find(|item| item.id != task.id).unwrap();
+        assert!(future.date.as_str() > Local::now().date_naive().format("%Y-%m-%d").to_string().as_str());
+        assert_eq!(future.recurrence, Recurrence::Daily);
+        assert_eq!((future.status, future.progress), (Status::Todo, 0));
+        assert_eq!(future.subtasks.len(), 1);
+        assert!(!future.subtasks[0].completed);
+        set_subtask_completed(&path, &task.subtasks[0].id, true)?;
+        initialize(&path)?;
+        assert_eq!(list_tasks(&path, None)?.len(), 2);
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn existing_v4_database_migrates_and_weekly_repeat_keeps_weekday() -> Result<()> {
+        let path = test_path();
+        let conn = open(&path)?;
+        conn.execute_batch(include_str!("../../migrations/001_tasks.sql"))?;
+        conn.execute_batch(include_str!("../../migrations/002_reminders.sql"))?;
+        conn.execute_batch(include_str!("../../migrations/003_subtasks.sql"))?;
+        conn.execute_batch(include_str!("../../migrations/004_soft_delete.sql"))?;
+        drop(conn);
+        initialize(&path)?;
+        let mut input = create_input("Weekly check", Priority::Medium);
+        input.recurrence = Recurrence::Weekly;
+        let task = create_task(&path, input)?;
+        let today = Local::now().date_naive();
+        let expected = next_occurrence_date(&task.date, Recurrence::Weekly, today)?;
+        let next = update_task(&path, UpdateTaskInput {
+            id: task.id.clone(), title: task.title, description: task.description, date: task.date,
+            status: Status::Done, progress: 100, priority: task.priority,
+            reminder: task.reminder, notes: task.notes, recurrence: Recurrence::Weekly,
+        })?;
+        let tasks = list_tasks(&path, None)?;
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks.iter().find(|item| item.id != next.id).unwrap().date, expected);
         std::fs::remove_file(path)?;
         Ok(())
     }
@@ -445,7 +594,7 @@ mod tests {
             id: overdue.id.clone(), title: overdue.title, description: overdue.description,
             date: "2026-09-24".into(), status: overdue.status,
             progress: overdue.progress, priority: overdue.priority,
-            reminder: overdue.reminder, notes: overdue.notes,
+            reminder: overdue.reminder, notes: overdue.notes, recurrence: overdue.recurrence,
         })?;
         assert_eq!(moved.date, "2026-09-24");
         let today_tasks = list_tasks(&path, Some("2026-09-24"))?;
@@ -475,7 +624,7 @@ mod tests {
         update_task(&path, UpdateTaskInput {
             id: task.id.clone(), title: task.title, description: None, date: task.date,
             status: Status::Todo, progress: 0, priority: Priority::High,
-            reminder: Reminder { enabled: true, time: Some("16:00".into()) }, notes: None,
+            reminder: Reminder { enabled: true, time: Some("16:00".into()) }, notes: None, recurrence: Recurrence::None,
         })?;
         assert_eq!(pending_reminders(&path, now)?.len(), 1);
         std::fs::remove_file(path)?;
@@ -501,7 +650,7 @@ mod tests {
         let parent_edit = update_task(&path, UpdateTaskInput {
             id: task.id.clone(), title: "Release v1".into(), description: None, date: task.date,
             status: Status::Todo, progress: 0, priority: Priority::High,
-            reminder: Reminder::default(), notes: None,
+            reminder: Reminder::default(), notes: None, recurrence: Recurrence::None,
         })?;
         assert_eq!((parent_edit.status, parent_edit.progress), (Status::Done, 100));
         let reopened = set_subtask_completed(&path, &all.subtasks[0].id, false)?;

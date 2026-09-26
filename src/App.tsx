@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -27,6 +27,7 @@ function asUpdate(task: Task, changes: Partial<UpdateTaskInput>): UpdateTaskInpu
     priority: task.priority,
     reminder: task.reminder,
     notes: task.notes,
+    recurrence: task.recurrence,
     ...changes,
   };
 }
@@ -44,13 +45,18 @@ function App() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [quickAdd, setQuickAdd] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [undoTaskId, setUndoTaskId] = useState<string | null>(null);
   const [today, setToday] = useState(todayKey);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [dateFilter, setDateFilter] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
   const tasks = useTaskStore((state) => state.tasks);
   const loading = useTaskStore((state) => state.loading);
   const loadTasks = useTaskStore((state) => state.loadTasks);
   const createTask = useTaskStore((state) => state.createTask);
   const updateTask = useTaskStore((state) => state.updateTask);
   const deleteTask = useTaskStore((state) => state.deleteTask);
+  const restoreTask = useTaskStore((state) => state.restoreTask);
   const addSubtask = useTaskStore((state) => state.addSubtask);
   const setSubtaskCompleted = useTaskStore((state) => state.setSubtaskCompleted);
   const deleteSubtask = useTaskStore((state) => state.deleteSubtask);
@@ -61,6 +67,7 @@ function App() {
   const t = copy[language];
 
   const showError = useCallback((error: unknown) => {
+    setUndoTaskId(null);
     setToast(error instanceof Error ? error.message : String(error));
   }, []);
 
@@ -110,9 +117,22 @@ function App() {
 
   useEffect(() => {
     if (!toast) return;
-    const timer = setTimeout(() => setToast(null), 4000);
+    const timer = setTimeout(() => { setToast(null); setUndoTaskId(null); }, undoTaskId ? 8000 : 4000);
     return () => clearTimeout(timer);
-  }, [toast]);
+  }, [toast, undoTaskId]);
+
+  useEffect(() => {
+    function handleSearchShortcut(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        setView("schedule");
+        setQuickAdd(false);
+        requestAnimationFrame(() => searchRef.current?.focus());
+      }
+    }
+    window.addEventListener("keydown", handleSearchShortcut);
+    return () => window.removeEventListener("keydown", handleSearchShortcut);
+  }, []);
 
   const todayTasks = useMemo(() => tasks.filter((task) => task.date === today), [tasks, today]);
   const activeTasks = useMemo(() => todayTasks.filter((task) => task.status !== "done").sort(byPriority), [todayTasks]);
@@ -121,6 +141,18 @@ function App() {
   const upcomingTasks = useMemo(() => tasks.filter((task) => task.date > today && task.status !== "done").sort(byPriority), [tasks, today]);
   const otherCompletedTasks = useMemo(() => tasks.filter((task) => task.date !== today && task.status === "done").sort(byPriority), [tasks, today]);
   const otherCount = overdueTasks.length + upcomingTasks.length + otherCompletedTasks.length;
+  const hasScheduleFilter = Boolean(searchQuery.trim() || dateFilter);
+  const matchingTasks = useMemo(() => {
+    const query = searchQuery.trim().toLocaleLowerCase();
+    return tasks.filter((task) => (!dateFilter || task.date === dateFilter)
+      && (!query || [task.title, task.description, task.notes].some((value) => value?.toLocaleLowerCase().includes(query))));
+  }, [tasks, searchQuery, dateFilter]);
+  const scheduleOverdue = matchingTasks.filter((task) => task.date < today && task.status !== "done").sort(byPriority);
+  const scheduleUpcoming = matchingTasks.filter((task) => task.date > today && task.status !== "done").sort(byPriority);
+  const scheduleCompleted = matchingTasks.filter((task) => task.date !== today && task.status === "done").sort(byPriority);
+  const scheduleTodayActive = hasScheduleFilter ? matchingTasks.filter((task) => task.date === today && task.status !== "done").sort(byPriority) : [];
+  const scheduleTodayDone = hasScheduleFilter ? matchingTasks.filter((task) => task.date === today && task.status === "done").sort(byPriority) : [];
+  const scheduleCount = scheduleOverdue.length + scheduleUpcoming.length + scheduleCompleted.length + scheduleTodayActive.length + scheduleTodayDone.length;
   const progress = todayTasks.length ? Math.round(todayTasks.reduce((sum, task) => sum + task.progress, 0) / todayTasks.length) : 0;
   const dateLabel = new Intl.DateTimeFormat(language === "zh" ? "zh-CN" : "en-US", {
     weekday: "long", month: "long", day: "numeric",
@@ -161,6 +193,15 @@ function App() {
     await deleteTask(id);
     setSelectedTask(null);
     setView(returnView);
+    setUndoTaskId(id);
+    setToast(t.taskDeleted);
+  }
+
+  async function undoDelete() {
+    if (!undoTaskId) return;
+    await restoreTask(undoTaskId);
+    setUndoTaskId(null);
+    setToast(t.taskRestored);
   }
 
   async function changeAlwaysOnTop(enabled: boolean) {
@@ -187,6 +228,7 @@ function App() {
     <div className="topbar" data-tauri-drag-region>
       <span className="drag-label" data-tauri-drag-region>{t.eyebrow}</span>
       <div className="topbar-actions">
+        <button className="icon-button" type="button" aria-label={t.searchTasks} onClick={() => { setView("schedule"); setQuickAdd(false); requestAnimationFrame(() => searchRef.current?.focus()); }}>⌕</button>
         <button className="icon-button language-switch" type="button" aria-label={t.switchLanguage} onClick={() => setLanguage(language === "zh" ? "en" : "zh")}>{language === "zh" ? "EN" : "中"}</button>
         <button className="icon-button" type="button" aria-label={t.settings} onClick={() => { setView("settings"); setQuickAdd(false); }}>⚙</button>
         <button className="icon-button" type="button" aria-label={t.close} onClick={() => { if (isTauri()) void getCurrentWindow().hide().catch(showError); }}>×</button>
@@ -197,12 +239,16 @@ function App() {
       : view === "detail" && selectedTask ? <TaskDetail key={selectedTask.id} task={selectedTask} language={language} t={t} onBack={() => setView(returnView)} onSave={saveDetail} onDelete={removeTask} onAddSubtask={addChild} onToggleSubtask={toggleChild} onDeleteSubtask={removeChild} onError={showError} />
       : view === "schedule" ? <div className="page schedule-page">
         <div className="page-heading"><button className="text-button" type="button" onClick={() => setView("today")}>← {t.back}</button><h2>{t.otherDates}</h2></div>
+        <div className="schedule-filters"><label><span>{t.searchTasks}</span><input ref={searchRef} type="search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder={t.searchPlaceholder} /></label><label><span>{t.filterDate}</span><input type="date" value={dateFilter} onChange={(event) => setDateFilter(event.target.value)} /></label></div>
+        {hasScheduleFilter && <button className="clear-filters" type="button" onClick={() => { setSearchQuery(""); setDateFilter(""); searchRef.current?.focus(); }}>{t.clearFilters}</button>}
         {loading && tasks.length === 0 ? <p className="loading">{t.loading}</p>
-          : otherCount === 0 ? <section className="empty-state"><div className="empty-icon" aria-hidden="true">✓</div><h2>{t.noOtherDates}</h2></section>
+          : scheduleCount === 0 ? <section className="empty-state"><div className="empty-icon" aria-hidden="true">⌕</div><h2>{hasScheduleFilter ? t.noSearchResults : t.noOtherDates}</h2></section>
           : <>
-            {overdueTasks.length > 0 && <section className="task-section schedule-section"><h2>{t.overdueTasks} · {overdueTasks.length}</h2>{overdueTasks.map((task) => <TaskItem key={task.id} task={task} t={t} onOpen={(item) => openTask(item, "schedule")} onProgress={changeProgress} onComplete={toggleComplete} onSubtask={toggleChild} onError={showError} showDate onMoveToToday={moveToToday} />)}</section>}
-            {upcomingTasks.length > 0 && <section className="task-section schedule-section"><h2>{t.upcomingTasks} · {upcomingTasks.length}</h2>{upcomingTasks.map((task) => <TaskItem key={task.id} task={task} t={t} onOpen={(item) => openTask(item, "schedule")} onProgress={changeProgress} onComplete={toggleComplete} onSubtask={toggleChild} onError={showError} showDate />)}</section>}
-            {otherCompletedTasks.length > 0 && <section className="task-section schedule-section completed-section"><h2>{t.otherCompletedTasks} · {otherCompletedTasks.length}</h2>{otherCompletedTasks.map((task) => <TaskItem key={task.id} task={task} t={t} onOpen={(item) => openTask(item, "schedule")} onProgress={changeProgress} onComplete={toggleComplete} onSubtask={toggleChild} onError={showError} showDate />)}</section>}
+            {scheduleTodayActive.length > 0 && <section className="task-section schedule-section"><h2>{t.today} · {scheduleTodayActive.length}</h2>{scheduleTodayActive.map((task) => <TaskItem key={task.id} task={task} t={t} onOpen={(item) => openTask(item, "schedule")} onProgress={changeProgress} onComplete={toggleComplete} onSubtask={toggleChild} onError={showError} showDate />)}</section>}
+            {scheduleOverdue.length > 0 && <section className="task-section schedule-section"><h2>{t.overdueTasks} · {scheduleOverdue.length}</h2>{scheduleOverdue.map((task) => <TaskItem key={task.id} task={task} t={t} onOpen={(item) => openTask(item, "schedule")} onProgress={changeProgress} onComplete={toggleComplete} onSubtask={toggleChild} onError={showError} showDate onMoveToToday={moveToToday} />)}</section>}
+            {scheduleUpcoming.length > 0 && <section className="task-section schedule-section"><h2>{t.upcomingTasks} · {scheduleUpcoming.length}</h2>{scheduleUpcoming.map((task) => <TaskItem key={task.id} task={task} t={t} onOpen={(item) => openTask(item, "schedule")} onProgress={changeProgress} onComplete={toggleComplete} onSubtask={toggleChild} onError={showError} showDate />)}</section>}
+            {scheduleTodayDone.length > 0 && <section className="task-section schedule-section completed-section"><h2>{t.completedTasks} · {scheduleTodayDone.length}</h2>{scheduleTodayDone.map((task) => <TaskItem key={task.id} task={task} t={t} onOpen={(item) => openTask(item, "schedule")} onProgress={changeProgress} onComplete={toggleComplete} onSubtask={toggleChild} onError={showError} showDate />)}</section>}
+            {scheduleCompleted.length > 0 && <section className="task-section schedule-section completed-section"><h2>{t.otherCompletedTasks} · {scheduleCompleted.length}</h2>{scheduleCompleted.map((task) => <TaskItem key={task.id} task={task} t={t} onOpen={(item) => openTask(item, "schedule")} onProgress={changeProgress} onComplete={toggleComplete} onSubtask={toggleChild} onError={showError} showDate />)}</section>}
           </>}
       </div>
       : <div className="today-page">
@@ -226,7 +272,7 @@ function App() {
         </div>
         <footer className="widget-footer">{quickAdd ? <QuickAdd t={t} onAdd={addTask} onCancel={() => setQuickAdd(false)} onError={showError} /> : <button className="add-task-button" type="button" onClick={() => setQuickAdd(true)}><span>＋</span>{t.addTask}</button>}</footer>
       </div>}
-    {toast && <div className="toast" role="status">{toast}</div>}
+    {toast && <div className="toast" role="status"><span>{toast}</span>{undoTaskId && <button type="button" onClick={() => void undoDelete().catch(showError)}>{t.undo}</button>}</div>}
   </main>;
 }
 

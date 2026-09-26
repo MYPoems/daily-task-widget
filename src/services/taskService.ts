@@ -23,6 +23,12 @@ export const taskService = {
   delete(id: string): Promise<boolean> {
     return invoke("delete_task", { id });
   },
+  restore(id: string): Promise<boolean> {
+    return invoke("restore_task", { id });
+  },
+  listDeleted(): Promise<Task[]> {
+    return invoke("list_deleted_tasks");
+  },
   snooze(id: string, minutes: 10 | 30 | 60): Promise<void> {
     return invoke("snooze_task", { id, minutes });
   },

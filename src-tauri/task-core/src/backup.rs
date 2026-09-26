@@ -36,6 +36,10 @@ struct BackupTask {
     task: Task,
     reminder_fired_at: Option<String>,
     snooze_until: Option<String>,
+    #[serde(default)]
+    parent_occurrence_id: Option<String>,
+    #[serde(default)]
+    deleted_at: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -47,16 +51,17 @@ pub struct ImportSummary {
 
 pub fn export(path: &Path, destination: &Path) -> Result<usize> {
     ensure_json_path(destination)?;
-    let tasks = db::list_tasks(path, None)?;
+    let mut tasks = db::list_tasks(path, None)?;
+    tasks.extend(db::list_deleted_tasks(path)?);
     let conn = Connection::open(path)?;
-    let mut reminder_state = conn.prepare("SELECT reminder_fired_at, snooze_until FROM tasks WHERE id = ?1")?;
+    let mut reminder_state = conn.prepare("SELECT reminder_fired_at, snooze_until, parent_occurrence_id, deleted_at FROM tasks WHERE id = ?1")?;
     let tasks = tasks.into_iter().map(|task| {
-        let (reminder_fired_at, snooze_until) = reminder_state.query_row([&task.id], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        Ok(BackupTask { task, reminder_fired_at, snooze_until })
+        let (reminder_fired_at, snooze_until, parent_occurrence_id, deleted_at) = reminder_state.query_row([&task.id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?;
+        Ok(BackupTask { task, reminder_fired_at, snooze_until, parent_occurrence_id, deleted_at })
     }).collect::<Result<Vec<_>, rusqlite::Error>>()?;
     let backup = Backup {
         format: FORMAT.into(),
-        format_version: 1,
+        format_version: 2,
         exported_at: Utc::now().to_rfc3339(),
         tasks,
     };
@@ -79,14 +84,28 @@ pub fn import(path: &Path, source: &Path) -> Result<ImportSummary> {
     let mut summary = ImportSummary { imported: 0, skipped: 0 };
     for entry in backup.tasks {
         let task = entry.task;
-        let exists: Option<String> = tx.query_row("SELECT id FROM tasks WHERE id = ?1", [&task.id], |row| row.get(0)).optional()?;
-        if exists.is_some() { summary.skipped += 1; continue; }
+        let exists: Option<Option<String>> = tx.query_row("SELECT deleted_at FROM tasks WHERE id = ?1", [&task.id], |row| row.get(0)).optional()?;
+        if let Some(deleted_at) = exists {
+            if deleted_at.is_some() && entry.deleted_at.is_none() {
+                tx.execute("UPDATE tasks SET deleted_at = NULL WHERE id = ?1", [&task.id])?;
+                summary.imported += 1;
+            } else {
+                summary.skipped += 1;
+            }
+            continue;
+        }
+        if let Some(parent_id) = &entry.parent_occurrence_id {
+            let duplicate: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM tasks WHERE parent_occurrence_id = ?1)", [parent_id], |row| row.get(0)
+            )?;
+            if duplicate { summary.skipped += 1; continue; }
+        }
         tx.execute(
-            "INSERT INTO tasks (id, title, description, task_date, status, progress, priority, reminder_enabled, reminder_time, notes, created_at, updated_at, reminder_fired_at, snooze_until)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT INTO tasks (id, title, description, task_date, status, progress, priority, reminder_enabled, reminder_time, notes, created_at, updated_at, reminder_fired_at, snooze_until, recurrence, parent_occurrence_id, deleted_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![task.id, task.title, task.description, task.date, task.status.as_db(), task.progress,
                 task.priority.as_db(), task.reminder.enabled, task.reminder.time, task.notes,
-                task.created_at, task.updated_at, entry.reminder_fired_at, entry.snooze_until],
+                task.created_at, task.updated_at, entry.reminder_fired_at, entry.snooze_until, task.recurrence.as_db(), entry.parent_occurrence_id, entry.deleted_at],
         )?;
         for child in task.subtasks {
             tx.execute(
@@ -101,13 +120,17 @@ pub fn import(path: &Path, source: &Path) -> Result<ImportSummary> {
 }
 
 fn validate(backup: &Backup) -> Result<()> {
-    if backup.format != FORMAT || backup.format_version != 1 { bail!("Unsupported backup format or version"); }
+    if backup.format != FORMAT || !matches!(backup.format_version, 1 | 2) { bail!("Unsupported backup format or version"); }
     DateTime::parse_from_rfc3339(&backup.exported_at).context("Invalid backup timestamp")?;
     let mut task_ids = HashSet::new();
     let mut child_ids = HashSet::new();
+    let mut parent_occurrence_ids = HashSet::new();
     for entry in &backup.tasks {
         let task = &entry.task;
         if task.id.is_empty() || !task_ids.insert(&task.id) { bail!("Missing or duplicate task ID"); }
+        if let Some(parent_id) = &entry.parent_occurrence_id {
+            if parent_id.is_empty() || !parent_occurrence_ids.insert(parent_id) { bail!("Invalid or duplicate repeat parent ID"); }
+        }
         validate_title(&task.title)?;
         validate_date(&task.date)?;
         if normalize_reminder(task.reminder.clone())? != task.reminder { bail!("Invalid disabled reminder data"); }
@@ -115,6 +138,7 @@ fn validate(backup: &Backup) -> Result<()> {
         DateTime::parse_from_rfc3339(&task.updated_at)?;
         if let Some(value) = &entry.reminder_fired_at { DateTime::parse_from_rfc3339(value)?; }
         if let Some(value) = &entry.snooze_until { DateTime::parse_from_rfc3339(value)?; }
+        if let Some(value) = &entry.deleted_at { DateTime::parse_from_rfc3339(value)?; }
         if !task.reminder.enabled && (entry.reminder_fired_at.is_some() || entry.snooze_until.is_some()) { bail!("Disabled reminder has saved state"); }
         let (status, progress) = if task.subtasks.is_empty() {
             normalize_status(task.status, task.progress)
@@ -138,7 +162,7 @@ fn validate(backup: &Backup) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::{CreateTaskInput, Priority, Reminder};
+    use crate::task::{CreateTaskInput, Priority, Recurrence, Reminder};
     use uuid::Uuid;
 
     #[test]
@@ -152,13 +176,13 @@ mod tests {
         db::initialize(&restored)?;
         let task = db::create_task(&original, CreateTaskInput {
             title: "Keep this".into(), description: Some("Details".into()), date: "2026-09-26".into(),
-            priority: Priority::High, reminder: Some(Reminder { enabled: true, time: Some("15:00".into()) }), notes: Some("Note".into()),
+            priority: Priority::High, reminder: Some(Reminder { enabled: true, time: Some("15:00".into()) }), notes: Some("Note".into()), recurrence: Recurrence::None,
         })?;
         db::add_subtask(&original, &task.id, "First step")?;
         db::snooze_task(&original, &task.id, 10)?;
         let existing = db::create_task(&restored, CreateTaskInput {
             title: "Already here".into(), description: None, date: "2026-09-26".into(),
-            priority: Priority::Low, reminder: None, notes: None,
+            priority: Priority::Low, reminder: None, notes: None, recurrence: Recurrence::None,
         })?;
         assert_eq!(export(&original, &backup_file)?, 1);
         let summary = import(&restored, &backup_file)?;
@@ -170,6 +194,10 @@ mod tests {
         assert!(db::get_task(&restored, &existing.id)?.is_some());
         let repeated = import(&restored, &backup_file)?;
         assert_eq!((repeated.imported, repeated.skipped), (0, 1));
+        db::delete_task(&restored, &task.id)?;
+        let recovered = import(&restored, &backup_file)?;
+        assert_eq!((recovered.imported, recovered.skipped), (1, 0));
+        assert!(db::get_task(&restored, &task.id)?.is_some());
         std::fs::remove_dir_all(folder)?;
         Ok(())
     }
@@ -184,6 +212,39 @@ mod tests {
         std::fs::write(&file, r#"{"format":"other","formatVersion":1,"exportedAt":"2026-09-26T00:00:00Z","tasks":[]}"#)?;
         assert!(import(&database, &file).is_err());
         assert!(db::list_tasks(&database, None)?.is_empty());
+        std::fs::remove_dir_all(folder)?;
+        Ok(())
+    }
+
+    #[test]
+    fn old_backups_import_and_deleted_tasks_survive_new_backup() -> Result<()> {
+        let folder = std::env::temp_dir().join(format!("daily-widget-compat-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&folder)?;
+        let source = folder.join("source.db");
+        let target = folder.join("target.db");
+        let file = folder.join("backup.json");
+        db::initialize(&source)?;
+        db::initialize(&target)?;
+        let task = db::create_task(&source, CreateTaskInput {
+            title: "Recover me".into(), description: None, date: "2026-09-26".into(),
+            priority: Priority::Medium, reminder: None, notes: None, recurrence: Recurrence::None,
+        })?;
+        assert_eq!(export(&source, &file)?, 1);
+        let mut old: serde_json::Value = serde_json::from_slice(&std::fs::read(&file)?)?;
+        old["formatVersion"] = 1.into();
+        let entry = old["tasks"][0].as_object_mut().context("Missing task")?;
+        entry.remove("recurrence");
+        entry.remove("parentOccurrenceId");
+        entry.remove("deletedAt");
+        std::fs::write(&file, serde_json::to_vec(&old)?)?;
+        assert_eq!(import(&target, &file)?.imported, 1);
+        assert_eq!(db::get_task(&target, &task.id)?.unwrap().recurrence, Recurrence::None);
+
+        db::delete_task(&source, &task.id)?;
+        assert_eq!(export(&source, &file)?, 1);
+        let backup: serde_json::Value = serde_json::from_slice(&std::fs::read(&file)?)?;
+        assert_eq!(backup["formatVersion"], 2);
+        assert!(backup["tasks"][0]["deletedAt"].is_string());
         std::fs::remove_dir_all(folder)?;
         Ok(())
     }

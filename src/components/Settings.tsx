@@ -3,8 +3,11 @@ import { isTauri } from "@tauri-apps/api/core";
 import { documentDir, join } from "@tauri-apps/api/path";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { getVersion } from "@tauri-apps/api/app";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Language, Translation } from "../i18n";
 import { taskService } from "../services/taskService";
+import type { Task } from "../types/task";
 import { useSettingsStore, type Theme } from "../stores/settingsStore";
 
 interface Props {
@@ -27,10 +30,33 @@ export function Settings({ t, language, onLanguage, onBack, onAlwaysOnTop, onErr
   const [autostart, setAutostart] = useState(false);
   const [busy, setBusy] = useState(false);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [deletedTasks, setDeletedTasks] = useState<Task[]>([]);
+  const [updateStatus, setUpdateStatus] = useState("");
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+
+  async function checkForUpdates() {
+    setCheckingUpdate(true);
+    setUpdateStatus("");
+    try {
+      const response = await fetch("https://api.github.com/repos/MYPoems/daily-task-widget/releases/latest", {
+        headers: { Accept: "application/vnd.github+json" }, cache: "no-store",
+      });
+      if (!response.ok) throw new Error(`${t.updateCheckFailed} (${response.status})`);
+      const release: unknown = await response.json();
+      const tag = typeof release === "object" && release !== null && "tag_name" in release ? (release as { tag_name: unknown }).tag_name : null;
+      if (typeof tag !== "string" || !/^v\d+\.\d+\.\d+$/.test(tag)) throw new Error(t.updateCheckFailed);
+      const current = (await getVersion()).split(".").map(Number);
+      const latest = tag.slice(1).split(".").map(Number);
+      setUpdateStatus(latest.some((part, index) => part > current[index] && latest.slice(0, index).every((earlier, earlierIndex) => earlier === current[earlierIndex]))
+        ? t.updateAvailable(tag) : t.upToDate);
+    } catch (error) { onError(error); setUpdateStatus(t.updateCheckFailed); }
+    finally { setCheckingUpdate(false); }
+  }
 
   useEffect(() => {
     if (!isTauri()) return;
     void isEnabled().then(setAutostart).catch(onError);
+    void taskService.listDeleted().then(setDeletedTasks).catch(onError);
   }, [onError]);
 
   async function changeAutostart(enabled: boolean) {
@@ -62,8 +88,20 @@ export function Settings({ t, language, onLanguage, onBack, onAlwaysOnTop, onErr
       if (path) {
         const summary = await taskService.importBackup(path);
         await onImported();
+        setDeletedTasks(await taskService.listDeleted());
         onNotice(t.backupImported(summary.imported, summary.skipped));
       }
+    } catch (error) { onError(error); }
+    finally { setBackupBusy(false); }
+  }
+
+  async function restoreDeleted(id: string) {
+    setBackupBusy(true);
+    try {
+      await taskService.restore(id);
+      await onImported();
+      setDeletedTasks(await taskService.listDeleted());
+      onNotice(t.taskRestored);
     } catch (error) { onError(error); }
     finally { setBackupBusy(false); }
   }
@@ -82,12 +120,21 @@ export function Settings({ t, language, onLanguage, onBack, onAlwaysOnTop, onErr
       <label className="settings-line"><span>{t.launchStartup}</span><input type="checkbox" checked={autostart} disabled={busy || !isTauri()} onChange={(event) => void changeAutostart(event.target.checked)} /></label>
       <div className="settings-line"><span>{t.shortcut}</span><strong>Ctrl + Alt + T</strong></div>
     </section>
+    <section className="settings-section"><h3>{t.updates}</h3>
+      <p className="settings-help">{t.updateHint}</p>
+      <div className="backup-actions"><button className="secondary-button" type="button" disabled={checkingUpdate || !isTauri()} onClick={() => void checkForUpdates()}>{checkingUpdate ? t.checkingUpdate : t.checkForUpdates}</button><button className="secondary-button" type="button" disabled={!isTauri()} onClick={() => void openUrl("https://github.com/MYPoems/daily-task-widget/releases/latest").catch(onError)}>{t.openReleases}</button></div>
+      {updateStatus && <p className="settings-help update-status" role="status">{updateStatus}</p>}
+    </section>
     <section className="settings-section"><h3>{t.backupTitle}</h3>
       <p className="settings-help">{t.backupHint}</p>
       <div className="backup-actions">
         <button className="secondary-button" type="button" disabled={backupBusy || !isTauri()} onClick={() => void exportBackup()}>{t.exportBackup}</button>
         <button className="secondary-button" type="button" disabled={backupBusy || !isTauri()} onClick={() => void importBackup()}>{t.importBackup}</button>
       </div>
+    </section>
+    <section className="settings-section"><h3>{t.recentlyDeleted}</h3>
+      {deletedTasks.length === 0 ? <p className="settings-help">{t.noDeletedTasks}</p> :
+        <div className="deleted-list">{deletedTasks.map((task) => <div className="deleted-row" key={task.id}><span title={task.title}>{task.title}</span><button type="button" disabled={backupBusy} onClick={() => void restoreDeleted(task.id)}>{t.restore}</button></div>)}</div>}
     </section>
   </div>;
 }

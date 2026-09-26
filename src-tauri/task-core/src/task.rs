@@ -37,6 +37,25 @@ pub enum Priority {
     High,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Recurrence {
+    #[default]
+    None,
+    Daily,
+    Weekly,
+}
+
+impl Recurrence {
+    pub fn as_db(self) -> &'static str {
+        match self { Self::None => "none", Self::Daily => "daily", Self::Weekly => "weekly" }
+    }
+
+    pub fn from_db(value: &str) -> Option<Self> {
+        match value { "none" => Some(Self::None), "daily" => Some(Self::Daily), "weekly" => Some(Self::Weekly), _ => None }
+    }
+}
+
 impl Priority {
     pub fn as_db(self) -> i64 {
         match self {
@@ -78,6 +97,8 @@ pub struct Task {
     pub created_at: String,
     pub updated_at: String,
     pub subtasks: Vec<Subtask>,
+    #[serde(default)]
+    pub recurrence: Recurrence,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +120,8 @@ pub struct CreateTaskInput {
     pub priority: Priority,
     pub reminder: Option<Reminder>,
     pub notes: Option<String>,
+    #[serde(default)]
+    pub recurrence: Recurrence,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,6 +136,8 @@ pub struct UpdateTaskInput {
     pub priority: Priority,
     pub reminder: Reminder,
     pub notes: Option<String>,
+    #[serde(default)]
+    pub recurrence: Recurrence,
 }
 
 pub fn validate_title(title: &str) -> Result<&str> {

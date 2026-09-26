@@ -42,6 +42,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _, _| reveal(app, None)))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_window_state::Builder::default()
             .with_state_flags(StateFlags::POSITION | StateFlags::SIZE)
@@ -109,6 +110,8 @@ pub fn run() {
             commands::task::get_task,
             commands::task::update_task,
             commands::task::delete_task,
+            commands::task::restore_task,
+            commands::task::list_deleted_tasks,
             commands::task::snooze_task,
             commands::task::add_subtask,
             commands::task::set_subtask_completed,

@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import type { Language, Translation } from "../i18n";
-import type { Task, TaskPriority, TaskStatus, UpdateTaskInput } from "../types/task";
+import type { Task, TaskPriority, TaskRecurrence, TaskStatus, UpdateTaskInput } from "../types/task";
 import { taskService } from "../services/taskService";
 
 interface Props {
@@ -27,6 +27,7 @@ export function TaskDetail({ task, language, t, onBack, onSave, onDelete, onAddS
     priority: task.priority,
     reminder: { ...task.reminder },
     notes: task.notes,
+    recurrence: task.recurrence,
   });
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -117,6 +118,8 @@ export function TaskDetail({ task, language, t, onBack, onSave, onDelete, onAddS
         <label className="field"><span>{t.date}</span><input type="date" value={draft.date} onChange={(event) => setDraft({ ...draft, date: event.target.value })} required /></label>
         <label className="field"><span>{t.priority}</span><select value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: event.target.value as TaskPriority })}><option value="low">{t.low}</option><option value="medium">{t.medium}</option><option value="high">{t.high}</option></select></label>
       </div>
+      <label className="field"><span>{t.repeat}</span><select value={draft.recurrence} onChange={(event) => setDraft({ ...draft, recurrence: event.target.value as TaskRecurrence })}><option value="none">{t.repeatNone}</option><option value="daily">{t.repeatDaily}</option><option value="weekly">{t.repeatWeekly}</option></select></label>
+      {draft.recurrence !== "none" && <p className="auto-progress-note repeat-note">{t.repeatHint}</p>}
       <div className="field-row">
         <label className="field"><span>{t.status}</span><select value={draft.status} disabled={task.subtasks.length > 0} onChange={(event) => setStatus(event.target.value as TaskStatus)}><option value="todo">{t.todo}</option><option value="doing">{t.doing}</option><option value="done">{t.done}</option></select></label>
         <label className="field"><span>{t.progress}: {draft.progress}%</span><input type="range" min="0" max="100" step="5" value={draft.progress} disabled={task.subtasks.length > 0} onChange={(event) => setProgress(Number(event.target.value))} /></label>

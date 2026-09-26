@@ -13,6 +13,10 @@
     "autostart:allow-disable",
     "autostart:allow-is-enabled",
     "dialog:allow-open",
-    "dialog:allow-save"
+    "dialog:allow-save",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://github.com/MYPoems/daily-task-widget/releases/latest" }]
+    }
   ]
 }

@@ -1,5 +1,6 @@
 export type TaskStatus = "todo" | "doing" | "done";
 export type TaskPriority = "low" | "medium" | "high";
+export type TaskRecurrence = "none" | "daily" | "weekly";
 
 export interface Reminder {
   enabled: boolean;
@@ -19,6 +20,7 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
   subtasks: Subtask[];
+  recurrence: TaskRecurrence;
 }
 
 export interface Subtask {
@@ -36,6 +38,7 @@ export interface CreateTaskInput {
   priority: TaskPriority;
   reminder?: Reminder | null;
   notes?: string | null;
+  recurrence?: TaskRecurrence;
 }
 
 export type UpdateTaskInput = Omit<Task, "createdAt" | "updatedAt" | "subtasks">;
